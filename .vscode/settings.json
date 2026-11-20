@@ -1,0 +1,7 @@
+{
+  "zig.zls.enabled": "on",
+  "zig.buildOnSaveArgs": [
+    "-fincremental"
+  ]
+}
+

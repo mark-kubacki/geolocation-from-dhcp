@@ -30,16 +30,38 @@ fn openat2(dirfd: linux.fd_t, path: [*:0]const u8, how: *const open_how) usize {
 
 /// writeFile works like Go’s io.WriteFile.
 pub fn writeFile(dirfd: linux.fd_t, basename: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
+    // We will need a temporary name.
+    const random_suffix = blk: {
+        var buf: u64 = undefined;
+        const rc = linux.getrandom(@ptrCast(&buf), @sizeOf(u64), 0);
+        if (linux.errno(rc) != .SUCCESS) return error.GetRandomFailed;
+        break :blk buf;
+    };
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_name = std.fmt.bufPrintSentinel(&tmp_buf, ".{s}.tmp.{x}", .{ basename, random_suffix }, 0) catch return error.NameTooLong;
+
+    // Actually write the data.
+    var filekind: enum { nameless, tempfile, final } = undefined;
     var fd: linux.fd_t = 0;
-    {
-        const rc = openat2(dirfd, basename, &open_how.new(.{
-            .flags = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
-            .mode = mode,
-            .resolve = RESOLVE_BENEATH,
-        }));
-        if (linux.errno(rc) != .SUCCESS) return error.FileOpenFailed;
-        fd = @intCast(rc);
-        errdefer _ = linux.close(fd);
+    write_blk: {
+        filekind = .nameless;
+        const trc = linux.openat(dirfd, ".", .{ .ACCMODE = .WRONLY, .TMPFILE = true, .CLOEXEC = true }, mode);
+        if (linux.errno(trc) == .SUCCESS) {
+            fd = @intCast(trc);
+        } else {
+            filekind = .tempfile;
+            const rc = openat2(dirfd, tmp_name, &open_how.new(.{
+                .flags = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+                .mode = mode,
+                .resolve = RESOLVE_BENEATH,
+            }));
+            if (linux.errno(rc) != .SUCCESS) return error.FileOpenFailed;
+            fd = @intCast(rc);
+        }
+        errdefer {
+            _ = linux.close(fd);
+            if (filekind == .tempfile) _ = linux.unlinkat(dirfd, tmp_name.ptr, 0);
+        }
 
         var written: usize = 0;
         while (written < result.len) {
@@ -49,6 +71,28 @@ pub fn writeFile(dirfd: linux.fd_t, basename: [:0]const u8, result: []const u8, 
                 .INTR => continue,
                 else => return error.FileWriteFailed,
             }
+        }
+
+        if (filekind == .nameless) {
+            if (linux.errno(linux.fsync(fd)) != .SUCCESS) return error.FileWriteFailed;
+
+            // Try the final name first, pretending it did not exist.
+            // Since we’ve been able to operate on raw network sockets, assume we’re privileged.
+            filekind = .final;
+            const link_rc = linux.linkat(fd, "", dirfd, basename.ptr, linux.AT.EMPTY_PATH);
+            if (linux.errno(link_rc) == .SUCCESS) break :write_blk;
+
+            filekind = .tempfile;
+            const link_rc2 = linux.linkat(fd, "", dirfd, tmp_name.ptr, linux.AT.EMPTY_PATH);
+            if (linux.errno(link_rc2) != .SUCCESS) return error.FileLinkFailed;
+        }
+    }
+    errdefer {
+        if (filekind == .final) {
+            // Unlikely since we already went through a flush.
+            _ = linux.unlinkat(dirfd, basename.ptr, 0);
+        } else {
+            _ = linux.unlinkat(dirfd, tmp_name.ptr, 0);
         }
     }
 
@@ -61,6 +105,10 @@ pub fn writeFile(dirfd: linux.fd_t, basename: [:0]const u8, result: []const u8, 
         // due to ‘close’ throwing errors that should be attributed to ‘write.’
         else => return error.FileWriteFailed,
     }
+    if (filekind == .final) return;
+
+    if (linux.errno(linux.renameat(dirfd, tmp_name.ptr, dirfd, basename.ptr)) != .SUCCESS)
+        return error.FileRenameFailed;
 }
 
 /// writeFileIfChanged calls writeFile only if the referenced file’s contents are
@@ -68,7 +116,7 @@ pub fn writeFile(dirfd: linux.fd_t, basename: [:0]const u8, result: []const u8, 
 ///
 /// For when you don’t want to wear down a disk, such as on embedded devices or with memory cards.
 pub fn writeFileIfChanged(dirname: [:0]const u8, basename: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
-    const dir_rc = linux.openat(linux.AT.FDCWD, dirname.ptr, .{ .PATH = true, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0);
+    const dir_rc = linux.openat(linux.AT.FDCWD, dirname.ptr, .{ .PATH = true, .DIRECTORY = false, .NOFOLLOW = true, .CLOEXEC = true }, 0);
     if (linux.errno(dir_rc) != .SUCCESS) return error.DirOpenFailed;
     const dir_fd: linux.fd_t = @intCast(dir_rc);
     defer _ = linux.close(dir_fd);

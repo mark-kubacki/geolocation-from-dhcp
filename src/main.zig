@@ -97,10 +97,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         const env = init.environ.getPosix("CONFIGURATION_DIRECTORY") orelse break :blk "/etc";
         break :blk if (env.len > 0) env else "/etc";
     };
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const geolcation_path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ state_dir, geolocation_filename }, 0) catch unreachable;
-
-    ioutil.writeFileIfChanged(geolcation_path, writer.buffered(), 0o644) catch |err| {
+    ioutil.writeFileIfChanged(state_dir, geolocation_filename, writer.buffered(), 0o644) catch |err| {
         const errname = @errorName(err);
         _ = linux.write(posix.STDERR_FILENO, errname.ptr, errname.len);
         return 6;

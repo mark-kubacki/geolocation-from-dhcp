@@ -1,12 +1,42 @@
 const std = @import("std");
 const linux = std.os.linux;
 
+// These are for linux.openat2, and in doing so we’re imitating
+// my library in Go, specifically os/fs/directory_linux.go
+const RESOLVE_NO_XDEV: u64 = 0x01;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+const RESOLVE_IN_ROOT: u64 = 0x10;
+const RESOLVE_CACHED: u64 = 0x20;
+
+const open_how = extern struct {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+
+    pub fn new(from: struct { flags: linux.O, mode: linux.mode_t, resolve: u64 }) open_how {
+        var t = std.mem.zeroes(open_how);
+        t.flags = @as(u32, @bitCast(from.flags));
+        t.mode = @as(u32, @bitCast(from.mode));
+        t.resolve = from.resolve;
+        return t;
+    }
+};
+
+fn openat2(dirfd: linux.fd_t, path: [*:0]const u8, how: *const open_how) usize {
+    return linux.syscall4(.openat2, @as(usize, @bitCast(@as(isize, dirfd))), @intFromPtr(path), @intFromPtr(how), @sizeOf(open_how));
+}
+
 /// writeFile works like Go’s io.WriteFile.
-pub fn writeFile(path: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
+pub fn writeFile(dirfd: linux.fd_t, basename: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
     var fd: linux.fd_t = 0;
     {
-        const flags: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
-        const rc = linux.openat(linux.AT.FDCWD, path.ptr, flags, mode);
+        const rc = openat2(dirfd, basename, &open_how.new(.{
+            .flags = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+            .mode = mode,
+            .resolve = RESOLVE_BENEATH,
+        }));
         if (linux.errno(rc) != .SUCCESS) return error.FileOpenFailed;
         fd = @intCast(rc);
         errdefer _ = linux.close(fd);
@@ -37,18 +67,26 @@ pub fn writeFile(path: [:0]const u8, result: []const u8, mode: linux.mode_t) !vo
 /// different from what would be written, or if the file is a special file.
 ///
 /// For when you don’t want to wear down a disk, such as on embedded devices or with memory cards.
-pub fn writeFileIfChanged(path: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
+pub fn writeFileIfChanged(dirname: [:0]const u8, basename: [:0]const u8, result: []const u8, mode: linux.mode_t) !void {
+    const dir_rc = linux.openat(linux.AT.FDCWD, dirname.ptr, .{ .PATH = true, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0);
+    if (linux.errno(dir_rc) != .SUCCESS) return error.DirOpenFailed;
+    const dir_fd: linux.fd_t = @intCast(dir_rc);
+    defer _ = linux.close(dir_fd);
+
     // On errors still pass to writeFile because those could be salvageable there.
-    const matches = eqlFileContents(path, result) catch false;
+    const matches = eqlFileContents(dir_fd, basename, result) catch false;
     if (matches) return;
 
-    try writeFile(path, result, mode);
+    try writeFile(dir_fd, basename, result, mode);
 }
 
 /// eqlFileContents tells whether the file contents match those given by |data|.
-pub fn eqlFileContents(path: [:0]const u8, data: []const u8) !bool {
-    const flags: linux.O = .{ .ACCMODE = .RDONLY, .CLOEXEC = true };
-    const rc = linux.openat(linux.AT.FDCWD, path.ptr, flags, 0);
+pub fn eqlFileContents(dirfd: linux.fd_t, basename: [:0]const u8, data: []const u8) !bool {
+    const rc = openat2(dirfd, basename, &open_how.new(.{
+        .flags = .{ .ACCMODE = .RDONLY, .CLOEXEC = true },
+        .mode = 0,
+        .resolve = RESOLVE_BENEATH,
+    }));
     switch (linux.errno(rc)) {
         .SUCCESS => {},
         .NOENT => return false, // in Rust ErrorKind::NotFound

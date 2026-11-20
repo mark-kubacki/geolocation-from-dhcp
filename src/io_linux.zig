@@ -48,14 +48,17 @@ pub fn writeFileIfChanged(path: [:0]const u8, result: []const u8, mode: linux.mo
 /// eqlFileContents tells whether the file contents match those given by |data|.
 pub fn eqlFileContents(path: [:0]const u8, data: []const u8) !bool {
     const flags: linux.O = .{ .ACCMODE = .RDONLY, .CLOEXEC = true };
-    const fd: linux.fd_t = @intCast(linux.openat(linux.AT.FDCWD, path.ptr, flags, 0));
-    switch (linux.errno(fd)) {
+    const rc = linux.openat(linux.AT.FDCWD, path.ptr, flags, 0);
+    switch (linux.errno(rc)) {
         .SUCCESS => {},
-        .EXIST => return false,
+        .NOENT => return false, // in Rust ErrorKind::NotFound
         else => return error.FileOpenFailed,
     }
+    const fd: linux.fd_t = @intCast(rc);
     defer _ = linux.close(fd);
 
+    // Stat after actually opening the file: to work on its filedesc and thereby avoiding a possible
+    // race condition (meanwhile someone could have replaced the file).
     var st: linux.Statx = undefined;
     const stat_rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .SIZE = true }, &st);
     if (linux.errno(stat_rc) != .SUCCESS) return error.FileStatFailed;

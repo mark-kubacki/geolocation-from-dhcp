@@ -116,6 +116,10 @@ pub const GeoDiscovery = struct {
     result_buffer: ?*std.Io.Writer,
 
     pub fn forInterface(ifname: []const u8) !GeoDiscovery {
+        if (ifname.len == 0 or ifname.len >= linux.IFNAMESIZE) {
+            return error.InterfaceNotFound;
+        }
+
         // We could set a protocol here and skip binding, go about to employ 'sendto' and 'recvfrom' our “raw” ethernet frame,
         // but then packages could be queueing up – for all interfaces no less. So, at the expense of another syscall, start with 0.
         const sock_rc = linux.socket(posix.AF.PACKET, linux.SOCK.RAW | linux.SOCK.CLOEXEC, 0);

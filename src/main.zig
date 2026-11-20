@@ -3,6 +3,7 @@ const posix = std.posix;
 const linux = std.os.linux;
 
 const dhcp = @import("dhcp.zig");
+const dhcp_bpf = @import("dhcp_linux.zig");
 const geo = @import("dhcp_geo.zig");
 const ioutil = @import("io_linux.zig");
 
@@ -12,7 +13,7 @@ const geolocation_filename = "geolocation";
 
 const RECV_TIMEOUT = 3; // in seconds
 const DHCP_DISCOVER_RETRIES = 3;
-// Discard so many unrelated packets before retrying.
+// Discard so many unrelated packets before retrying if installing the BPF filter failed.
 // On every packet the timeout is reset and you risk partaking on the traffic flow of
 // a busy interface, so keep this value small.
 const MAX_UNRELATED_PACKETS = 5;
@@ -138,6 +139,10 @@ pub const GeoDiscovery = struct {
         if (linux.ioctl(sock, linux.SIOCGIFHWADDR, @intFromPtr(&ifr)) != 0) {
             return error.MacAddressNotFound;
         }
+
+        // Before going live, try attaching this BPF filter to limit the packets we
+        // receive later to the minimum we want to handle, namely only DHCP OFFERS.
+        dhcp_bpf.filterForDhcpResponses(sock) catch {};
 
         // Now clamp down the socket to the interface and set the protocol,
         // or else we’d be receiving packets meant for other interfaces,

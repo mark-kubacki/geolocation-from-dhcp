@@ -10,6 +10,7 @@ const ioutil = @import("io_linux.zig");
 // We will prepend '/etc' to it or whatever is set in envvar CONFIGURATION_DIRECTORY.
 const geolocation_filename = "geolocation";
 
+const RECV_TIMEOUT = 3; // in seconds
 const DHCP_DISCOVER_RETRIES = 3;
 // Discard so many unrelated packets before retrying.
 // On every packet the timeout is reset and you risk partaking on the traffic flow of
@@ -65,7 +66,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         defer _ = disco.close();
 
         disco.result_buffer = &writer;
-        var timeout: isize = 3; // seconds
+        var timeout: isize = RECV_TIMEOUT; // seconds (mutable so we can set it to zero)
         for (0..DHCP_DISCOVER_RETRIES) |_| {
             disco.sendDiscover() catch |err| {
                 const errname = @errorName(err);
@@ -184,7 +185,7 @@ pub const GeoDiscovery = struct {
 
     pub fn receiveResponse(self: *GeoDiscovery, timeout: isize) !bool {
         if (timeout > 0) {
-            const recv_timeout = posix.timeval{ .sec = 5, .usec = 0 };
+            const recv_timeout = posix.timeval{ .sec = timeout, .usec = 0 };
             try posix.setsockopt(self.sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&recv_timeout));
         }
 

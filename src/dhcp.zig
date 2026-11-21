@@ -11,7 +11,11 @@ const EthHeader = extern struct {
 };
 
 const IpVersionIhl = packed struct(u8) {
+    /// Header length, multiply by 4.
+    ///
+    /// For a list of options see: https://www.iana.org/assignments/ip-parameters#ip-parameters-1
     ihl: u4 = 5,
+    /// IPv4, though some jokers used to set this to 5 in attempts to game firewalls.
     version: u4 = 4,
 };
 

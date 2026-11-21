@@ -203,9 +203,11 @@ pub const GeoDiscovery = struct {
             }
             if (n < 282) continue;
 
+            // Don’t handle unsolicited IPv4 Options (header size other than 20B)
             const ip_hdr_len = (@as(usize, buf[14] & 0x0F)) * 4;
-            if (buf[23] != 17) continue; // Must be UDP
+            if (ip_hdr_len != 20) continue;
 
+            if (buf[23] != 17) continue; // Must be UDP
             const udp_offset = 14 + ip_hdr_len;
             const src_port = std.mem.readInt(u16, buf[udp_offset..][0..2], .big);
             const dst_port = std.mem.readInt(u16, buf[udp_offset + 2 ..][0..2], .big);
